@@ -167,7 +167,7 @@ func (e *ErrorHandler) HandleError(w http.ResponseWriter, r *http.Request, errMs
 		pprof.WriteHeapProfile(memProfFile)
 	}
 
-	if e.Spec.DoNotTrack {
+	if e.Spec.DoNotTrack || ctxGetDoNotTrack(r) {
 		return
 	}
 

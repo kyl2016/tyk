@@ -130,7 +130,7 @@ func getSessionTags(session *user.SessionState) []string {
 
 func (s *SuccessHandler) RecordHit(r *http.Request, timing Latency, code int, responseCopy *http.Response) {
 
-	if s.Spec.DoNotTrack {
+	if s.Spec.DoNotTrack || ctxGetDoNotTrack(r) {
 		return
 	}
 
