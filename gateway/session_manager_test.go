@@ -53,68 +53,131 @@ func TestSessionLimiter_DepthLimitExceeded(t *testing.T) {
 	countriesSchema, err := graphql.NewSchemaFromString(gqlCountriesSchema)
 	require.NoError(t, err)
 
-	req := &graphql.Request{
-		OperationName: "TestQuery",
-		Variables:     nil,
-		Query:         "query TestQuery { countries { code name continent { code name countries { code name } } } }",
-	}
+	// global depth: 4 countries depth: 3
+	countriesQuery := `query TestQuery { countries { code name continent { code name countries { code name } } }}`
 
-	accessDef := &user.AccessDefinition{
-		Limit: &user.APILimit{
-			MaxQueryDepth: 3,
+	// global depth: 5 countries depth: 3 continents depth: 4
+	countriesContinentsQuery := `query TestQuery { 
+		countries { continent { countries { name } } }
+		continents { countries { continent { countries { name } } } }
+	}`
+
+	cases := []struct {
+		name      string
+		query     string
+		accessDef *user.AccessDefinition
+		result    sessionFailReason
+	}{
+		{
+			name:  "should use global limit and exceed when no per field rights",
+			query: countriesQuery,
+			accessDef: &user.AccessDefinition{
+				Limit:             &user.APILimit{MaxQueryDepth: 3},
+				FieldAccessRights: []user.FieldAccessDefinition{},
+			},
+			result: sessionFailDepthLimit,
 		},
-		FieldAccessRights: []user.FieldAccessDefinition{},
+		{
+			name:  "should respect unlimited specific field depth limit and not exceed",
+			query: countriesQuery,
+			accessDef: &user.AccessDefinition{
+				Limit: &user.APILimit{MaxQueryDepth: 3},
+				FieldAccessRights: []user.FieldAccessDefinition{
+					{
+						TypeName: "Query", FieldName: "countries",
+						Limits: user.FieldLimits{MaxQueryDepth: -1},
+					},
+				},
+			},
+			result: sessionFailNone,
+		},
+		{
+			name:  "should respect higher specific field depth limit and not exceed",
+			query: countriesQuery,
+			accessDef: &user.AccessDefinition{
+				Limit: &user.APILimit{MaxQueryDepth: 3},
+				FieldAccessRights: []user.FieldAccessDefinition{
+					{
+						TypeName: "Query", FieldName: "countries",
+						Limits: user.FieldLimits{MaxQueryDepth: 10},
+					},
+				},
+			},
+			result: sessionFailNone,
+		},
+		{
+			name:  "should respect lower specific field depth limit and exceed",
+			query: countriesQuery,
+			accessDef: &user.AccessDefinition{
+				Limit: &user.APILimit{MaxQueryDepth: 100},
+				FieldAccessRights: []user.FieldAccessDefinition{
+					{
+						TypeName: "Query", FieldName: "countries",
+						Limits: user.FieldLimits{MaxQueryDepth: 1},
+					},
+				},
+			},
+			result: sessionFailDepthLimit,
+		},
+		{
+			name:  "should respect specific field depth limits and not exceed",
+			query: countriesContinentsQuery,
+			accessDef: &user.AccessDefinition{
+				Limit: &user.APILimit{MaxQueryDepth: 1},
+				FieldAccessRights: []user.FieldAccessDefinition{
+					{
+						TypeName: "Query", FieldName: "countries",
+						Limits: user.FieldLimits{MaxQueryDepth: 3},
+					},
+					{
+						TypeName: "Query", FieldName: "continents",
+						Limits: user.FieldLimits{MaxQueryDepth: 4},
+					},
+				},
+			},
+			result: sessionFailNone,
+		},
+		{
+			name:  "should fallback to global limit when continents limits is not specified",
+			query: countriesContinentsQuery,
+			accessDef: &user.AccessDefinition{
+				Limit: &user.APILimit{MaxQueryDepth: 1},
+				FieldAccessRights: []user.FieldAccessDefinition{
+					{
+						TypeName: "Query", FieldName: "countries",
+						Limits: user.FieldLimits{MaxQueryDepth: 3},
+					},
+				},
+			},
+			result: sessionFailDepthLimit,
+		},
+		{
+			name:  "should fallback to global limit when countries limits is not specified",
+			query: countriesContinentsQuery,
+			accessDef: &user.AccessDefinition{
+				Limit: &user.APILimit{MaxQueryDepth: 1},
+				FieldAccessRights: []user.FieldAccessDefinition{
+					{
+						TypeName: "Query", FieldName: "continents",
+						Limits: user.FieldLimits{MaxQueryDepth: 4},
+					},
+				},
+			},
+			result: sessionFailDepthLimit,
+		},
 	}
 
-	t.Run("should fallback to global limit and exceed", func(t *testing.T) {
-		failReason := l.DepthLimitExceeded(req, accessDef, countriesSchema)
-		assert.Equal(t, sessionFailDepthLimit, failReason)
-	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &graphql.Request{
+				OperationName: "TestQuery",
+				Variables:     nil,
+				Query:         tc.query,
+			}
 
-	t.Run("should respect unlimited specific field depth limit and not exceed", func(t *testing.T) {
-		accessDef.FieldAccessRights = []user.FieldAccessDefinition{
-			{
-				TypeName:  "Query",
-				FieldName: "countries",
-				Limits: user.FieldLimits{
-					MaxQueryDepth: -1,
-				},
-			},
-		}
+			failReason := l.DepthLimitExceeded(req, tc.accessDef, countriesSchema)
+			assert.Equal(t, tc.result, failReason)
 
-		failReason := l.DepthLimitExceeded(req, accessDef, countriesSchema)
-		assert.Equal(t, sessionFailNone, failReason)
-	})
-
-	t.Run("should respect higher specific field depth limit and not exceed", func(t *testing.T) {
-		accessDef.FieldAccessRights = []user.FieldAccessDefinition{
-			{
-				TypeName:  "Query",
-				FieldName: "countries",
-				Limits: user.FieldLimits{
-					MaxQueryDepth: 10,
-				},
-			},
-		}
-
-		failReason := l.DepthLimitExceeded(req, accessDef, countriesSchema)
-		assert.Equal(t, sessionFailNone, failReason)
-	})
-
-	t.Run("should respect lower specific field depth limit and exceed", func(t *testing.T) {
-		accessDef.Limit.MaxQueryDepth = 100
-		accessDef.FieldAccessRights = []user.FieldAccessDefinition{
-			{
-				TypeName:  "Query",
-				FieldName: "countries",
-				Limits: user.FieldLimits{
-					MaxQueryDepth: 1,
-				},
-			},
-		}
-
-		failReason := l.DepthLimitExceeded(req, accessDef, countriesSchema)
-		assert.Equal(t, sessionFailDepthLimit, failReason)
-	})
-
+		})
+	}
 }
