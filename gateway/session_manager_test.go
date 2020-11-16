@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/jensneuse/graphql-go-tools/pkg/graphql"
@@ -178,6 +179,86 @@ func TestSessionLimiter_DepthLimitExceeded(t *testing.T) {
 			failReason := l.DepthLimitExceeded(req, tc.accessDef, countriesSchema)
 			assert.Equal(t, tc.result, failReason)
 
+		})
+	}
+}
+
+func TestSessionLimiter_ForwardMessage_GraphqlLimits(t *testing.T) {
+	countriesSchema, err := graphql.NewSchemaFromString(gqlCountriesSchema)
+	require.NoError(t, err)
+
+	apiSpec := BuildAPI(func(spec *APISpec) {
+		spec.GraphQL.Enabled = true
+		spec.GraphQL.Schema = gqlCountriesSchema
+		spec.GraphQLExecutor.Schema = countriesSchema
+	})[0]
+
+	gqlReq := &graphql.Request{
+		OperationName: "TestQuery",
+		Variables:     nil,
+		Query:         `query TestQuery { countries { code name continent { code name countries { code name } } }}`,
+	}
+	httpReq := &http.Request{}
+	ctxSetGraphQLRequest(httpReq, gqlReq)
+
+	session := user.NewSessionState()
+	session.MaxQueryDepth = 3
+	l := SessionLimiter{}
+
+	cases := []struct {
+		name   string
+		rights map[string]user.AccessDefinition
+		result sessionFailReason
+	}{
+		{
+			name:   "should fail when no access rights for the given spec",
+			rights: map[string]user.AccessDefinition{"any": {}},
+			result: sessionFailRateLimit,
+		},
+		{
+			name: "should take limit from access rights and fail",
+			rights: map[string]user.AccessDefinition{
+				apiSpec.APIID: {
+					Limit: &user.APILimit{MaxQueryDepth: 1},
+				},
+			},
+			result: sessionFailDepthLimit,
+		},
+		{
+			name: "should take field limits from access rights and proceed",
+			rights: map[string]user.AccessDefinition{
+				apiSpec.APIID: {
+					FieldAccessRights: []user.FieldAccessDefinition{
+						{
+							TypeName: "Query", FieldName: "countries",
+							Limits: user.FieldLimits{MaxQueryDepth: 3},
+						},
+					},
+				},
+			},
+			result: sessionFailNone,
+		},
+		{
+			name: "should take limit from session and fail when access rights with not matching field and empty limit",
+			rights: map[string]user.AccessDefinition{
+				apiSpec.APIID: {
+					FieldAccessRights: []user.FieldAccessDefinition{
+						{
+							TypeName: "Query", FieldName: "continents",
+							Limits: user.FieldLimits{MaxQueryDepth: 4},
+						},
+					},
+				},
+			},
+			result: sessionFailDepthLimit,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			session.SetAccessRights(tc.rights)
+			failReason := l.ForwardMessage(httpReq, session, "", nil, false, false, nil, apiSpec, false)
+			assert.Equal(t, tc.result, failReason)
 		})
 	}
 }
