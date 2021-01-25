@@ -174,6 +174,25 @@ func TestWhitelist(t *testing.T) {
 			{Path: "/Bar", Code: http.StatusForbidden},
 		}...)
 	})
+
+	t.Run("Listen path matches", func(t *testing.T) {
+		BuildAndLoadAPI(func(spec *APISpec) {
+			UpdateAPIVersion(spec, "v1", func(v *apidef.VersionInfo) {
+				v.Paths.WhiteList = []string{"/apple", "banana"}
+				v.UseExtendedPaths = false
+			})
+
+			spec.Proxy.ListenPath = "/apples/"
+		})
+
+		_, _ = ts.Run(t, []test.TestCase{
+			{Path: "/apples/apple", Code: http.StatusOK},
+			{Path: "/apples/count", Code: http.StatusForbidden},
+
+			// should match if whitelisted path doesn't start with '/'.
+			{Path: "/apples/banana", Code: http.StatusOK},
+		}...)
+	})
 }
 
 func TestBlacklist(t *testing.T) {
@@ -243,6 +262,25 @@ func TestBlacklist(t *testing.T) {
 			{Path: "/Foo", Code: http.StatusForbidden},
 			{Path: "/bar", Code: http.StatusForbidden},
 			{Path: "/Bar", Code: http.StatusOK},
+		}...)
+	})
+
+	t.Run("Listen path matches", func(t *testing.T) {
+		BuildAndLoadAPI(func(spec *APISpec) {
+			UpdateAPIVersion(spec, "v1", func(v *apidef.VersionInfo) {
+				v.Paths.BlackList = []string{"/apple", "banana"}
+				v.UseExtendedPaths = false
+			})
+
+			spec.Proxy.ListenPath = "/apples/"
+		})
+
+		_, _ = ts.Run(t, []test.TestCase{
+			{Path: "/apples/apple", Code: http.StatusForbidden},
+			{Path: "/apples/count", Code: http.StatusOK},
+
+			// should match if blacklisted path doesn't start with '/'.
+			{Path: "/apples/banana", Code: http.StatusForbidden},
 		}...)
 	})
 }
